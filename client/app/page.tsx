@@ -40,7 +40,7 @@ export default function Calculator() {
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [secretCode] = useState("1234"); // Default password
   const [authCode] = useState("6789"); // User authentication code
-  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
+  const [currentSecretCode, setCurrentSecretCode] = useState<string | null>(null);
   const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
   const [showVault, setShowVault] = useState(false);
   const [newNote, setNewNote] = useState("");
@@ -49,12 +49,8 @@ export default function Calculator() {
   // Messages State
   const [messages, setMessages] = useState<Message[]>([]);
   const [showMessages, setShowMessages] = useState(false);
-  const [newMessage, setNewMessage] = useState({
-    sender_name: "",
-    sender_email: "",
-    subject: "",
-    content: ""
-  });
+  const [messagingActive, setMessagingActive] = useState(false);
+  const [recipientId, setRecipientId] = useState<string>('');
 
   const handleNumber = (num: string) => {
     if (resetDisplay) {
@@ -104,12 +100,67 @@ export default function Calculator() {
     }
   };
 
-  const handleEquals = () => {
+  const handleEquals = async () => {
+    const inputBuffer = display;
+
+    // Check current user ID command (type 67 and press =)
+    if (inputBuffer === "67") {
+      if (currentSecretCode) {
+        setDisplay(currentSecretCode);
+        setTimeout(() => setDisplay("0"), 2000);
+      } else {
+        setDisplay("NO AUTH");
+        setTimeout(() => setDisplay("0"), 1500);
+      }
+      return;
+    }
+
+    // Check if matches vault code (unlock)
+    if (inputBuffer === secretCode) {
+      setIsUnlocked(true);
+      setShowHistory(true);
+      fetchMessages();
+      setDisplay("0");
+      return;
+    }
+
+    // Check if it's a 4-digit authentication code (not the vault code)
+    if (/^\d{4}$/.test(inputBuffer) && inputBuffer !== secretCode) {
+      await authenticateUser(inputBuffer);
+      setMessagingActive(true);
+      setDisplay("0");
+      return;
+    }
+
+    // If messaging active, encode and send message
+    if (messagingActive && currentSecretCode) {
+      // Check if setting recipient (4-digit secret code)
+      if (/^\d{4}$/.test(inputBuffer) && inputBuffer !== secretCode) {
+        setRecipientId(inputBuffer);
+        setDisplay("TO:" + inputBuffer);
+        setTimeout(() => setDisplay("0"), 1500);
+        return;
+      }
+
+      // If we have recipient and message text
+      if (recipientId && inputBuffer.length > 0) {
+        await encodeAndSendMessage(inputBuffer);
+        return;
+      }
+
+      // No recipient set
+      if (!recipientId) {
+        setDisplay("SET TO: ID");
+        setTimeout(() => setDisplay("0"), 1500);
+        return;
+      }
+    }
+
+    // Normal calculation
     if (operation && previousValue !== null) {
-      const currentValue = parseFloat(display);
+      const currentValue = parseFloat(inputBuffer);
       const result = calculate(previousValue, currentValue, operation);
       
-      // Add to history
       const expression = `${previousValue} ${operation} ${currentValue} =`;
       setHistory([{ expression, result: String(result) }, ...history]);
       
@@ -117,18 +168,6 @@ export default function Calculator() {
       setPreviousValue(null);
       setOperation(null);
       setResetDisplay(true);
-    } else {
-      // Check for vault secret code
-      if (display === secretCode) {
-        setIsUnlocked(true);
-        setShowHistory(true);
-        fetchMessages();
-        setDisplay("0");
-      }
-      // Check for authentication code
-      else if (display === authCode) {
-        authenticateUser(authCode);
-      }
     }
   };
 
@@ -222,11 +261,11 @@ export default function Calculator() {
 
       if (response.ok) {
         const data = await response.json();
-        setCurrentUserId(data.user_id);
-        setDisplay(String(data.user_id));
+        setCurrentSecretCode(code);
+        setDisplay("AUTH OK");
         setTimeout(() => {
-          alert(`Authenticated! Your User ID: ${data.user_id}\nEmail: ${data.email}`);
-        }, 100);
+          setDisplay("0");
+        }, 1500);
       } else {
         setDisplay("Error");
         setTimeout(() => setDisplay("0"), 1500);
@@ -253,31 +292,38 @@ export default function Calculator() {
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!currentUserId) {
-      alert('Please authenticate first by entering your secret code (6789) and pressing =');
-      return;
-    }
-
-    if (!newMessage.sender_name || !newMessage.sender_email || !newMessage.content) {
-      alert('Please fill in required fields');
-      return;
-    }
-
+  const encodeAndSendMessage = async (message: string) => {
     try {
-      const response = await fetch(`http://localhost:4000/api/messages?user_id=${currentUserId}`, {
+      const response = await fetch(`http://localhost:4000/api/messages?secret_code=${recipientId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newMessage)
+        body: JSON.stringify({
+          sender_name: `User ${currentSecretCode}`,
+          sender_email: `user${currentSecretCode}@spy.com`,
+          subject: 'Secret Message',
+          content: message
+        })
       });
 
       if (response.ok) {
-        setNewMessage({ sender_name: "", sender_email: "", subject: "", content: "" });
-        fetchMessages();
-        alert('Message sent successfully!');
+        // Store in history
+        const historyEntry = {
+          expression: `TO:${recipientId}`,
+          result: message.substring(0, 20) + (message.length > 20 ? '...' : '')
+        };
+        setHistory([historyEntry, ...history]);
+
+        setDisplay('SENT');
+        setTimeout(() => setDisplay('0'), 1500);
+        setRecipientId(''); // Clear recipient for next message
+      } else {
+        setDisplay('FAILED');
+        setTimeout(() => setDisplay('0'), 1500);
       }
     } catch (error) {
       console.error('Failed to send message:', error);
+      setDisplay('ERROR');
+      setTimeout(() => setDisplay('0'), 1500);
     }
   };
 
@@ -684,6 +730,7 @@ export default function Calculator() {
                   ) : (
                     // Messages View
                     <div className="flex flex-col h-full">
+                      {/* Messages List */}
                       {messages.length === 0 ? (
                         <div className="flex items-center justify-center h-full">
                           <div className="text-center text-[#8e8e8e] px-8">
@@ -693,8 +740,11 @@ export default function Calculator() {
                           </div>
                         </div>
                       ) : (
-                        <div className="p-4 space-y-3">
-                          <h3 className="text-white text-lg font-medium mb-4">Secret Messages</h3>
+                        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                          <div className="mb-4">
+                            <h3 className="text-white text-lg font-medium">Messages</h3>
+                            <p className="text-xs text-[#8e8e8e] mt-1">Send: Type ID:Message, press =</p>
+                          </div>
                           {messages.map((message) => (
                             <div
                               key={message.id}

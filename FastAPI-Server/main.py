@@ -142,13 +142,13 @@ async def set_secret_code(user_id: int, request: SecretCodeAuth, db: Session = D
 
 # Message Routes
 @app.post("/api/messages", response_model=MessageResponse, status_code=201)
-async def create_message(request: MessageCreate, user_id: int, db: Session = Depends(get_db)):
-    """Create a new message for a user"""
+async def create_message(request: MessageCreate, secret_code: str, db: Session = Depends(get_db)):
+    """Create a new message for a user (identified by secret code)"""
     try:
-        # Verify user exists
-        user = db.query(User).filter(User.id == user_id).first()
+        # Find user by secret code
+        user = db.query(User).filter(User.secret_code == secret_code).first()
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail="User not found with that secret code")
         
         # Create message
         message = Message(
@@ -156,7 +156,7 @@ async def create_message(request: MessageCreate, user_id: int, db: Session = Dep
             sender_email=request.sender_email,
             subject=request.subject,
             content=request.content,
-            user_id=user_id
+            user_id=user.id
         )
         db.add(message)
         db.commit()
@@ -169,16 +169,19 @@ async def create_message(request: MessageCreate, user_id: int, db: Session = Dep
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/messages/{user_id}", response_model=List[MessageResponse])
-async def get_messages(user_id: int, unread_only: bool = False, db: Session = Depends(get_db)):
-    """Get all messages for a user"""
+async def get_messages(user_id: str, unread_only: bool = False, db: Session = Depends(get_db)):
+    """Get all messages for a user (identified by secret code or user ID)"""
     try:
-        # Verify user exists
-        user = db.query(User).filter(User.id == user_id).first()
+        # Try to find user by secret code first, then by ID
+        user = db.query(User).filter(User.secret_code == user_id).first()
+        if not user and user_id.isdigit():
+            user = db.query(User).filter(User.id == int(user_id)).first()
+        
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
         # Query messages
-        query = db.query(Message).filter(Message.user_id == user_id)
+        query = db.query(Message).filter(Message.user_id == user.id)
         if unread_only:
             query = query.filter(Message.is_read == False)
         
