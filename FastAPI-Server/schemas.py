@@ -30,3 +30,32 @@ class LogoutRequest(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+class MessageCreate(BaseModel):
+    sender_name: str = Field(min_length=1, max_length=255)
+    sender_email: EmailStr
+    subject: Optional[str] = Field(None, max_length=500)
+    content: str = Field(min_length=1)
+
+class MessageResponse(BaseModel):
+    id: int
+    sender_name: str
+    sender_email: str
+    subject: Optional[str]
+    content: str
+    is_read: bool
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class MessageMarkRead(BaseModel):
+    message_id: int
+
+class SecretCodeAuth(BaseModel):
+    secret_code: str = Field(min_length=4, max_length=50)
+
+class UserIdResponse(BaseModel):
+    user_id: int
+    email: str
+

@@ -6,11 +6,14 @@ from database import get_db, init_db
 from config import settings
 from schemas import (
     UserRegister, UserLogin, TokenRefresh, AuthResponse,
-    LogoutRequest, HealthResponse
+    LogoutRequest, HealthResponse, MessageCreate, MessageResponse, 
+    MessageMarkRead, SecretCodeAuth, UserIdResponse
 )
 from auth_service import register_user, login_user, refresh_session, revoke_tokens_for_user
+from models import Message, User
 import uvicorn
 import logging
+from typing import List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -95,6 +98,129 @@ async def logout(request: LogoutRequest, db: Session = Depends(get_db)):
         revoke_tokens_for_user(db, request.userId)
         return {"message": "Logged out"}
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Secret Code Authentication
+@app.post("/api/auth/secret-code", response_model=UserIdResponse)
+async def authenticate_with_secret_code(request: SecretCodeAuth, db: Session = Depends(get_db)):
+    """Authenticate user with secret code and return user ID"""
+    try:
+        user = db.query(User).filter(User.secret_code == request.secret_code).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid secret code")
+        
+        return UserIdResponse(user_id=user.id, email=user.email)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/users/{user_id}/secret-code")
+async def set_secret_code(user_id: int, request: SecretCodeAuth, db: Session = Depends(get_db)):
+    """Set or update secret code for a user"""
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Check if secret code already exists for another user
+        existing = db.query(User).filter(
+            User.secret_code == request.secret_code,
+            User.id != user_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Secret code already in use")
+        
+        user.secret_code = request.secret_code
+        db.commit()
+        return {"message": "Secret code set successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Message Routes
+@app.post("/api/messages", response_model=MessageResponse, status_code=201)
+async def create_message(request: MessageCreate, user_id: int, db: Session = Depends(get_db)):
+    """Create a new message for a user"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Create message
+        message = Message(
+            sender_name=request.sender_name,
+            sender_email=request.sender_email,
+            subject=request.subject,
+            content=request.content,
+            user_id=user_id
+        )
+        db.add(message)
+        db.commit()
+        db.refresh(message)
+        return message
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/messages/{user_id}", response_model=List[MessageResponse])
+async def get_messages(user_id: int, unread_only: bool = False, db: Session = Depends(get_db)):
+    """Get all messages for a user"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Query messages
+        query = db.query(Message).filter(Message.user_id == user_id)
+        if unread_only:
+            query = query.filter(Message.is_read == False)
+        
+        messages = query.order_by(Message.created_at.desc()).all()
+        return messages
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.patch("/api/messages/{message_id}/read")
+async def mark_message_read(message_id: int, db: Session = Depends(get_db)):
+    """Mark a message as read"""
+    try:
+        message = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+        
+        message.is_read = True
+        db.commit()
+        return {"message": "Message marked as read"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/messages/{message_id}")
+async def delete_message(message_id: int, db: Session = Depends(get_db)):
+    """Delete a message"""
+    try:
+        message = db.query(Message).filter(Message.id == message_id).first()
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+        
+        db.delete(message)
+        db.commit()
+        return {"message": "Message deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
