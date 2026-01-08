@@ -142,13 +142,21 @@ async def set_secret_code(user_id: int, request: SecretCodeAuth, db: Session = D
 
 # Message Routes
 @app.post("/api/messages", response_model=MessageResponse, status_code=201)
-async def create_message(request: MessageCreate, secret_code: str, db: Session = Depends(get_db)):
-    """Create a new message for a user (identified by secret code)"""
+async def create_message(request: MessageCreate, user_id: str = None, secret_code: str = None, db: Session = Depends(get_db)):
+    """Create a new message for a user (identified by secret code or user ID)"""
     try:
-        # Find user by secret code
-        user = db.query(User).filter(User.secret_code == secret_code).first()
+        # Find user by secret_code or user_id
+        user = None
+        if secret_code:
+            user = db.query(User).filter(User.secret_code == secret_code).first()
+        elif user_id:
+            # Try as secret code first, then as numeric ID
+            user = db.query(User).filter(User.secret_code == user_id).first()
+            if not user and user_id.isdigit():
+                user = db.query(User).filter(User.id == int(user_id)).first()
+        
         if not user:
-            raise HTTPException(status_code=404, detail="User not found with that secret code")
+            raise HTTPException(status_code=404, detail="User not found with that secret code or user ID")
         
         # Create message
         message = Message(

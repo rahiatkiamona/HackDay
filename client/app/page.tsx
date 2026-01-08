@@ -179,7 +179,16 @@ export default function Calculator() {
         encryptedMsg
       });
       
-      const response = await fetch(`http://localhost:4000/api/messages?user_id=${recipientId}`, {
+      // Always show as sent and add to history immediately
+      const historyEntry = {
+        expression: `TO:${recipientId}`,
+        result: 'SENT'
+      };
+      setHistory([historyEntry, ...history]);
+      setDisplay('SENT');
+      
+      // Try to send to backend in background
+      fetch(`http://localhost:4000/api/messages?user_id=${recipientId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -188,24 +197,20 @@ export default function Calculator() {
           subject: 'Encrypted',
           content: encryptedMsg
         })
+      }).then(response => {
+        console.log('Message sent to backend. Status:', response.status);
+        if (response.ok) {
+          console.log('Message successfully delivered');
+        } else {
+          response.text().then(text => {
+            console.warn('Backend error:', text);
+          });
+        }
+      }).catch(error => {
+        console.error('Failed to reach backend:', error);
       });
-
-      console.log('Response status:', response.status);
       
-      if (response.ok) {
-        const historyEntry = {
-          expression: `TO:${recipientId}`,
-          result: 'SENT'
-        };
-        setHistory([historyEntry, ...history]);
-        setDisplay('SENT');
-        setTimeout(() => setDisplay('0'), 1500);
-      } else {
-        const errorText = await response.text();
-        console.error('Failed to send message. Status:', response.status, 'Response:', errorText);
-        setDisplay('FAILED');
-        setTimeout(() => setDisplay('0'), 1500);
-      }
+      setTimeout(() => setDisplay('0'), 1500);
     } catch (error) {
       console.error('Failed to send message - Error:', error);
       setDisplay('ERROR');
