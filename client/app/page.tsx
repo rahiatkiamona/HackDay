@@ -38,8 +38,7 @@ export default function Calculator() {
   
   // Spy Calculator Features
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [secretCode] = useState("1234"); // Default password
-  const [authCode] = useState("6789"); // User authentication code
+  const [secretCode] = useState("1234"); // Spy mode unlock code
   const [currentSecretCode, setCurrentSecretCode] = useState<string | null>(null);
   const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
   const [showVault, setShowVault] = useState(false);
@@ -51,6 +50,34 @@ export default function Calculator() {
   const [showMessages, setShowMessages] = useState(false);
   const [messagingActive, setMessagingActive] = useState(false);
   const [recipientId, setRecipientId] = useState<string>('');
+  const [inMessageMode, setInMessageMode] = useState(false);
+  const [messageBuffer, setMessageBuffer] = useState<string>('');
+
+  // Encryption mapping: A-Z=1-26, space=27, fullstop=28, comma=29, question=30
+  const encryptChar = (char: string): string => {
+    const upper = char.toUpperCase();
+    if (upper >= 'A' && upper <= 'Z') {
+      return String(upper.charCodeAt(0) - 64);
+    }
+    if (char === ' ') return '27';
+    if (char === '.') return '28';
+    if (char === ',') return '29';
+    if (char === '?') return '30';
+    return '';
+  };
+
+  const decryptMessage = (encrypted: string): string => {
+    const numbers = encrypted.split('+');
+    return numbers.map(num => {
+      const n = parseInt(num);
+      if (n >= 1 && n <= 26) return String.fromCharCode(64 + n);
+      if (n === 27) return ' ';
+      if (n === 28) return '.';
+      if (n === 29) return ',';
+      if (n === 30) return '?';
+      return '';
+    }).join('');
+  };
 
   const handleNumber = (num: string) => {
     if (resetDisplay) {
@@ -71,6 +98,12 @@ export default function Calculator() {
   };
 
   const handleOperation = (op: string) => {
+    // If in message mode with recipient set, treat + as a character, not an operation
+    if (inMessageMode && recipientId && op === "+") {
+      setDisplay(display === "0" ? op : display + op);
+      return;
+    }
+
     const currentValue = parseFloat(display);
     
     if (previousValue === null) {
@@ -100,8 +133,155 @@ export default function Calculator() {
     }
   };
 
+  // Message Functions
+  const authenticateUser = async (code: string) => {
+    try {
+      const response = await fetch('http://localhost:4000/api/auth/secret-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret_code: code })
+      });
+
+      if (response.ok) {
+        setCurrentSecretCode(code);
+        fetchMessages();
+      } else {
+        setDisplay("INVALID");
+        setTimeout(() => setDisplay("0"), 1500);
+      }
+    } catch (error) {
+      console.error('Authentication failed:', error);
+      setDisplay("ERROR");
+      setTimeout(() => setDisplay("0"), 1500);
+    }
+  };
+
+  const fetchMessages = async () => {
+    if (!currentSecretCode) return;
+    
+    try {
+      const response = await fetch(`http://localhost:4000/api/messages/${currentSecretCode}`);
+      if (response.ok) {
+        const data = await response.json();
+        setMessages(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch messages:', error);
+      setMessages([]);
+    }
+  };
+
+  const sendEncryptedMessage = async (encryptedMsg: string) => {
+    try {
+      console.log('Sending encrypted message:', {
+        recipientId,
+        currentSecretCode,
+        encryptedMsg
+      });
+      
+      const response = await fetch(`http://localhost:4000/api/messages?user_id=${recipientId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_name: `Spy ${currentSecretCode}`,
+          sender_email: `spy${currentSecretCode}@secure.com`,
+          subject: 'Encrypted',
+          content: encryptedMsg
+        })
+      });
+
+      console.log('Response status:', response.status);
+      
+      if (response.ok) {
+        const historyEntry = {
+          expression: `TO:${recipientId}`,
+          result: 'SENT'
+        };
+        setHistory([historyEntry, ...history]);
+        setDisplay('SENT');
+        setTimeout(() => setDisplay('0'), 1500);
+      } else {
+        const errorText = await response.text();
+        console.error('Failed to send message. Status:', response.status, 'Response:', errorText);
+        setDisplay('FAILED');
+        setTimeout(() => setDisplay('0'), 1500);
+      }
+    } catch (error) {
+      console.error('Failed to send message - Error:', error);
+      setDisplay('ERROR');
+      setTimeout(() => setDisplay('0'), 1500);
+    }
+  };
+
+  const encodeAndSendMessage = async (message: string) => {
+    try {
+      const response = await fetch(`http://localhost:4000/api/messages?secret_code=${recipientId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_name: `User ${currentSecretCode}`,
+          sender_email: `user${currentSecretCode}@spy.com`,
+          subject: 'Secret Message',
+          content: message
+        })
+      });
+
+      if (response.ok) {
+        const historyEntry = {
+          expression: `TO:${recipientId}`,
+          result: message.substring(0, 20) + (message.length > 20 ? '...' : '')
+        };
+        setHistory([historyEntry, ...history]);
+        setDisplay('SENT');
+        setTimeout(() => setDisplay('0'), 1500);
+        setRecipientId('');
+      } else {
+        setDisplay('FAILED');
+        setTimeout(() => setDisplay('0'), 1500);
+      }
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      setDisplay('ERROR');
+      setTimeout(() => setDisplay('0'), 1500);
+    }
+  };
+
   const handleEquals = async () => {
     const inputBuffer = display;
+
+    // Check for messaging mode activation (111)
+    if (inputBuffer === "111" && isUnlocked && currentSecretCode) {
+      setInMessageMode(true);
+      setMessageBuffer('');
+      setRecipientId('');
+      setDisplay("MSG MODE");
+      setTimeout(() => setDisplay("TO?"), 1000);
+      return;
+    }
+
+    // If in message mode
+    if (inMessageMode) {
+      // First, set recipient if not set
+      if (!recipientId && /^\d{4}$/.test(inputBuffer)) {
+        setRecipientId(inputBuffer);
+        setDisplay("TO:" + inputBuffer);
+        setTimeout(() => {
+          setDisplay("MSG?");
+          setTimeout(() => setDisplay("0"), 500);
+        }, 1000);
+        return;
+      }
+
+      // If recipient set and we have a message, send it
+      if (recipientId && inputBuffer.length > 0) {
+        await sendEncryptedMessage(inputBuffer);
+        setInMessageMode(false);
+        setMessageBuffer('');
+        setRecipientId('');
+        return;
+      }
+      return;
+    }
 
     // Check current user ID command (type 67 and press =)
     if (inputBuffer === "67") {
@@ -109,26 +289,27 @@ export default function Calculator() {
         setDisplay(currentSecretCode);
         setTimeout(() => setDisplay("0"), 2000);
       } else {
-        setDisplay("NO AUTH");
+        setDisplay("SET ID");
         setTimeout(() => setDisplay("0"), 1500);
       }
       return;
     }
 
-    // Check if matches vault code (unlock)
+    // Check if matches spy mode unlock code (1234)
     if (inputBuffer === secretCode) {
       setIsUnlocked(true);
       setShowHistory(true);
-      fetchMessages();
-      setDisplay("0");
+      setMessagingActive(true);
+      setDisplay("SPY MODE");
+      setTimeout(() => setDisplay("0"), 1500);
       return;
     }
 
-    // Check if it's a 4-digit authentication code (not the vault code)
-    if (/^\d{4}$/.test(inputBuffer) && inputBuffer !== secretCode) {
+    // If spy mode active but no identity set, set identity with 4-digit code
+    if (isUnlocked && !currentSecretCode && /^\d{4}$/.test(inputBuffer)) {
       await authenticateUser(inputBuffer);
-      setMessagingActive(true);
-      setDisplay("0");
+      setDisplay("ID SET");
+      setTimeout(() => setDisplay("0"), 1500);
       return;
     }
 
@@ -156,8 +337,8 @@ export default function Calculator() {
       }
     }
 
-    // Normal calculation
-    if (operation && previousValue !== null) {
+    // Normal calculation (only if not in message mode)
+    if (operation && previousValue !== null && !inMessageMode) {
       const currentValue = parseFloat(inputBuffer);
       const result = calculate(previousValue, currentValue, operation);
       
@@ -250,83 +431,6 @@ export default function Calculator() {
     setDisplay("0");
   };
 
-  // Message Functions
-  const authenticateUser = async (code: string) => {
-    try {
-      const response = await fetch('http://localhost:4000/api/auth/secret-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ secret_code: code })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        setCurrentSecretCode(code);
-        setDisplay("AUTH OK");
-        setTimeout(() => {
-          setDisplay("0");
-        }, 1500);
-      } else {
-        setDisplay("Error");
-        setTimeout(() => setDisplay("0"), 1500);
-      }
-    } catch (error) {
-      console.error('Authentication failed:', error);
-      setDisplay("Error");
-      setTimeout(() => setDisplay("0"), 1500);
-    }
-  };
-
-  const fetchMessages = async () => {
-    if (!currentUserId) return;
-    
-    try {
-      const response = await fetch(`http://localhost:4000/api/messages/${currentUserId}`);
-      if (response.ok) {
-        const data = await response.json();
-        setMessages(data);
-      }
-    } catch (error) {
-      console.error('Failed to fetch messages:', error);
-      setMessages([]);
-    }
-  };
-
-  const encodeAndSendMessage = async (message: string) => {
-    try {
-      const response = await fetch(`http://localhost:4000/api/messages?secret_code=${recipientId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender_name: `User ${currentSecretCode}`,
-          sender_email: `user${currentSecretCode}@spy.com`,
-          subject: 'Secret Message',
-          content: message
-        })
-      });
-
-      if (response.ok) {
-        // Store in history
-        const historyEntry = {
-          expression: `TO:${recipientId}`,
-          result: message.substring(0, 20) + (message.length > 20 ? '...' : '')
-        };
-        setHistory([historyEntry, ...history]);
-
-        setDisplay('SENT');
-        setTimeout(() => setDisplay('0'), 1500);
-        setRecipientId(''); // Clear recipient for next message
-      } else {
-        setDisplay('FAILED');
-        setTimeout(() => setDisplay('0'), 1500);
-      }
-    } catch (error) {
-      console.error('Failed to send message:', error);
-      setDisplay('ERROR');
-      setTimeout(() => setDisplay('0'), 1500);
-    }
-  };
-
   const handleMarkAsRead = async (messageId: number) => {
     try {
       await fetch(`http://localhost:4000/api/messages/${messageId}/read`, {
@@ -352,7 +456,7 @@ export default function Calculator() {
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-gradient-to-br from-[#0a0a0a] to-[#1a1a1a] overflow-hidden">
       {/* Mobile Container */}
-      <div className="w-[380px] h-[780px] bg-[#1a1d1a] rounded-[40px] shadow-2xl overflow-hidden flex flex-col border-8 border-[#0a0a0a]">
+      <div className="relative w-[380px] h-[780px] bg-[#1a1d1a] rounded-[40px] shadow-2xl overflow-hidden flex flex-col border-8 border-[#0a0a0a]">
       {/* Vault View (Hidden Area) */}
       {isUnlocked && showVault ? (
         <div className="w-full h-full flex flex-col bg-gradient-to-br from-[#252525] to-[#2d2d2d] animate-in fade-in slide-in-from-right duration-300">
@@ -472,33 +576,31 @@ export default function Calculator() {
                   <h1 className="text-white text-base font-normal">Standard</h1>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => {
+                      setShowHistory(!showHistory);
+                      if (!showHistory && isUnlocked && messages.length === 0) {
+                        fetchMessages();
+                      }
+                    }}
+                    className="text-white hover:bg-[#3b3b3b] p-2 rounded transition-all duration-150 hover:rotate-12"
+                    title={isUnlocked ? "History & Messages" : "History"}
+                  >
+                    <Clock className="h-5 w-5" />
+                    {isUnlocked && messages.filter(m => !m.is_read).length > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
+                        {messages.filter(m => !m.is_read).length}
+                      </span>
+                    )}
+                  </button>
                   {isUnlocked && (
-                    <>
-                      <button
-                        onClick={() => setShowVault(true)}
-                        className="text-green-400 hover:bg-[#3b3b3b] p-2 rounded transition-all duration-150 animate-pulse"
-                        title="Open Vault"
-                      >
-                        <Lock className="h-5 w-5" />
-                      </button>
-                      <button 
-                        onClick={() => {
-                          setShowHistory(!showHistory);
-                          if (!showHistory && messages.length === 0) {
-                            fetchMessages();
-                          }
-                        }}
-                        className="text-white hover:bg-[#3b3b3b] p-2 rounded transition-all duration-150 hover:rotate-12"
-                        title="History & Messages"
-                      >
-                        <Clock className="h-5 w-5" />
-                        {messages.filter(m => !m.is_read).length > 0 && (
-                          <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
-                            {messages.filter(m => !m.is_read).length}
-                          </span>
-                        )}
-                      </button>
-                    </>
+                    <button
+                      onClick={() => setShowVault(true)}
+                      className="text-green-400 hover:bg-[#3b3b3b] p-2 rounded transition-all duration-150 animate-pulse"
+                      title="Open Vault"
+                    >
+                      <Lock className="h-5 w-5" />
+                    </button>
                   )}
                 </div>
               </div>
@@ -648,9 +750,9 @@ export default function Calculator() {
             </div>
           </div>
 
-          {/* History/Messages Overlay - Only visible when unlocked and showHistory is true */}
-          {isUnlocked && showHistory && (
-            <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 animate-in fade-in duration-300">
+          {/* History/Messages Overlay - Visible when showHistory is true */}
+          {showHistory && (
+            <div className="absolute inset-0 z-50 animate-in fade-in duration-300">
               <div className="w-full h-full flex flex-col bg-[#1a1d1a]">
                 {/* Header */}
                 <div className="flex items-center justify-between p-4 border-b border-[#3b3b3b]">
@@ -661,23 +763,25 @@ export default function Calculator() {
                     >
                       History
                     </button>
-                    <button
-                      onClick={() => { 
-                        setShowMessages(true); 
-                        if (messages.length === 0) {
-                          fetchMessages();
-                        }
-                      }}
-                      className={`px-3 py-2 rounded ${showMessages ? 'bg-[#1e8449] text-white' : 'bg-[#2a2d33] text-[#8e8e8e]'} flex items-center gap-2`}
-                    >
-                      <Mail className="h-4 w-4" />
-                      Messages
-                      {messages.filter(m => !m.is_read).length > 0 && (
-                        <span className="bg-red-500 text-white text-xs rounded-full px-2 py-0.5">
-                          {messages.filter(m => !m.is_read).length}
-                        </span>
-                      )}
-                    </button>
+                    {isUnlocked && (
+                      <button
+                        onClick={() => { 
+                          setShowMessages(true); 
+                          if (messages.length === 0) {
+                            fetchMessages();
+                          }
+                        }}
+                        className={`px-3 py-2 rounded ${showMessages ? 'bg-[#1e8449] text-white' : 'bg-[#2a2d33] text-[#8e8e8e]'} flex items-center gap-2`}
+                      >
+                        <Mail className="h-4 w-4" />
+                        Messages
+                        {messages.filter(m => !m.is_read).length > 0 && (
+                          <span className="bg-red-500 text-white text-xs rounded-full px-2 py-0.5">
+                            {messages.filter(m => !m.is_read).length}
+                          </span>
+                        )}
+                      </button>
+                    )}
                   </div>
                   <button
                     onClick={() => setShowHistory(false)}
@@ -767,10 +871,12 @@ export default function Calculator() {
                                   <Trash2 className="h-5 w-5" />
                                 </button>
                               </div>
-                              {message.subject && (
+                              {message.subject && message.subject !== 'Encrypted' && (
                                 <div className="text-white text-base font-medium mb-2">{message.subject}</div>
                               )}
-                              <div className="text-[#b0b0b0] text-base mb-3 leading-relaxed">{message.content}</div>
+                              <div className="text-[#b0b0b0] text-base mb-3 leading-relaxed">
+                                {message.subject === 'Encrypted' ? decryptMessage(message.content) : message.content}
+                              </div>
                               <div className="flex items-center justify-between pt-2 border-t border-[#3b3b3b]">
                                 <div className="text-[#6e6e6e] text-sm">
                                   {new Date(message.created_at).toLocaleString()}
@@ -796,7 +902,7 @@ export default function Calculator() {
           )}
         </>
       )}
-    </div>
+      </div>
     </div>
   );
 }
